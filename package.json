@@ -1,0 +1,18 @@
+{
+  "name": "repolens-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "RepoLens — AI Codebase Intelligence Platform",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:web": "npm --prefix apps/web run dev",
+    "dev:api": "python -m uvicorn apps.api.app.main:app --reload --port 8000",
+    "build:web": "npm --prefix apps/web run build",
+    "test:backend": "pytest tests/",
+    "docker:up": "docker compose -f infrastructure/docker/docker-compose.yml up -d",
+    "docker:down": "docker compose -f infrastructure/docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
