@@ -19,8 +19,17 @@ import {
   AlertCircle,
   Clock,
   ExternalLink,
-  Sparkles
+  Sparkles,
+  Network,
+  Share2,
+  Bot,
+  Database,
+  ShieldAlert,
 } from "lucide-react";
+import DependencyGraph from "@/components/DependencyGraph";
+import ChatAssistant from "@/components/ChatAssistant";
+import CodeSearch from "@/components/CodeSearch";
+import SecurityAuditDashboard from "@/components/SecurityAuditDashboard";
 
 interface SymbolData {
   id: string;
@@ -63,6 +72,10 @@ interface RepoSummary {
   total_files: number;
   total_loc: number;
   total_symbols: number;
+  total_dependencies: number;
+  total_chunks: number;
+  embedding_model?: string;
+  embedding_dimension?: number;
   language_breakdown: Record<string, number>;
 }
 
@@ -77,7 +90,8 @@ export default function CommandCenter() {
   const [repos, setRepos] = useState<RepoSummary[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<RepoDetail | null>(null);
   const [selectedFile, setSelectedFile] = useState<FileData | null>(null);
-  
+  const [activeTab, setActiveTab] = useState<"graph" | "chat" | "search" | "inspector" | "audit">("graph");
+
   // Ingestion form state
   const [githubUrl, setGithubUrl] = useState("https://github.com/pallets/flask");
   const [branch, setBranch] = useState("main");
@@ -100,6 +114,9 @@ export default function CommandCenter() {
       if (res.ok) {
         const data = await res.json();
         setRepos(data);
+        if (data.length > 0 && !selectedRepo) {
+          fetchRepoDetail(data[0].id);
+        }
       }
     } catch (err) {
       console.error("Failed to fetch repositories:", err);
@@ -149,8 +166,8 @@ export default function CommandCenter() {
       setProgressData({
         step: "QUEUED",
         progress: 5,
-        details: "Ingestion task queued...",
-        logs: ["Task queued in Redis background broker..."],
+        details: "Ingestion task queued in worker pool...",
+        logs: ["Task queued in asynchronous background broker..."],
       });
 
       // Connect to SSE stream
@@ -179,112 +196,122 @@ export default function CommandCenter() {
         eventSource.close();
         setIsSubmitting(false);
       };
-
     } catch (err: any) {
       setErrorMsg(err.message || "An unexpected error occurred");
       setIsSubmitting(false);
     }
   };
 
-  // Metrics totals
+  const handleSelectFileFromCitation = (filePath: string, line?: number) => {
+    if (!selectedRepo) return;
+    const matchedFile = selectedRepo.files.find((f) => f.path === filePath || f.path.endsWith(filePath));
+    if (matchedFile) {
+      setSelectedFile(matchedFile);
+      setActiveTab("inspector");
+    }
+  };
+
+  // Aggregated platform stats
   const totalRepos = repos.length;
-  const totalFiles = repos.reduce((acc, r) => acc + r.total_files, 0);
-  const totalLoc = repos.reduce((acc, r) => acc + r.total_loc, 0);
-  const totalSymbols = repos.reduce((acc, r) => acc + r.total_symbols, 0);
+  const totalFiles = repos.reduce((acc, r) => acc + (r.total_files || 0), 0);
+  const totalLoc = repos.reduce((acc, r) => acc + (r.total_loc || 0), 0);
+  const totalSymbols = repos.reduce((acc, r) => acc + (r.total_symbols || 0), 0);
+  const totalDependencies = repos.reduce((acc, r) => acc + (r.total_dependencies || 0), 0);
+  const totalChunks = repos.reduce((acc, r) => acc + (r.total_chunks || 0), 0);
 
   return (
-    <div className="min-h-screen bg-obsidian-base text-gray-100 flex flex-col font-sans">
-      {/* Top Navbar */}
+    <div className="min-h-screen bg-obsidian-base text-gray-100 flex flex-col font-sans selection:bg-electric-indigo/30 selection:text-white">
+      {/* Top Navigation Bar */}
       <header className="border-b border-obsidian-border bg-obsidian-surface/80 backdrop-blur-md sticky top-0 z-40 px-6 py-3.5 flex items-center justify-between">
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-2.5">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-electric-indigo to-electric-violet flex items-center justify-center shadow-glow">
-              <Cpu className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-bold text-lg tracking-tight bg-gradient-to-r from-white via-gray-200 to-gray-400 bg-clip-text text-transparent">
-              RepoLens
-            </span>
+        <div className="flex items-center space-x-3">
+          <div className="p-2 rounded-xl bg-gradient-to-tr from-electric-indigo to-electric-violet shadow-glow text-white font-bold flex items-center justify-center">
+            <Cpu className="w-5 h-5" />
           </div>
-          <span className="text-xs font-mono px-2.5 py-0.5 rounded-full bg-electric-indigo/10 border border-electric-indigo/30 text-electric-indigo">
-            v1.0.0 AST Engine
-          </span>
+          <div>
+            <div className="flex items-center space-x-2">
+              <h1 className="font-mono text-base font-bold tracking-tight text-white">RepoLens</h1>
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-electric-indigo/10 text-electric-indigo border border-electric-indigo/20 font-mono font-bold">
+                M4 &bull; Security &amp; Code Quality Intelligence
+              </span>
+            </div>
+            <p className="text-xs text-gray-400">Enterprise Code Intelligence & Architectural Command Center</p>
+          </div>
         </div>
 
-        {/* Real-time Status Badge */}
-        <div className="flex items-center space-x-6">
-          <div className="flex items-center space-x-2 text-xs font-mono text-gray-400">
-            <span className="w-2 h-2 rounded-full bg-electric-emerald animate-pulse"></span>
-            <span>API Gateway: <strong className="text-gray-200">Online</strong></span>
+        <div className="flex items-center space-x-4">
+          <div className="hidden sm:flex items-center space-x-2 text-xs font-mono text-gray-400 bg-obsidian-base px-3 py-1.5 rounded-lg border border-obsidian-border">
+            <Database className="w-3.5 h-3.5 text-electric-indigo" />
+            <span>pgvector HNSW</span>
+            <span className="text-gray-600">|</span>
+            <Sparkles className="w-3.5 h-3.5 text-electric-emerald" />
+            <span>gemini-embedding-2</span>
           </div>
           <button
             onClick={fetchRepositories}
-            className="p-2 rounded-lg bg-obsidian-elevated hover:bg-obsidian-border transition text-gray-300 hover:text-white"
-            title="Refresh Repositories"
+            className="p-2 rounded-lg bg-obsidian-border hover:bg-gray-800 text-gray-300 hover:text-white transition"
+            title="Refresh Ingested Repositories"
           >
             <RefreshCw className="w-4 h-4" />
           </button>
         </div>
       </header>
 
-      {/* Main Content Layout */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-6 space-y-8">
-        {/* Command Center Hero & Quick Submit */}
-        <div className="glass-panel rounded-2xl p-6 md:p-8 space-y-6 glow-border">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
-              <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white flex items-center gap-2.5">
-                <Sparkles className="w-6 h-6 text-electric-indigo" />
-                Codebase Intelligence Command Center
-              </h1>
-              <p className="text-gray-400 text-sm mt-1">
-                Ingest any public GitHub repository for AST symbol extraction, language metrics, and structural static analysis.
-              </p>
+      {/* Main Container */}
+      <main className="flex-1 p-6 max-w-[1700px] w-full mx-auto space-y-6">
+        {/* Ingestion Command Bar */}
+        <div className="glass-panel rounded-2xl p-5 border border-obsidian-border space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2 text-sm font-semibold text-gray-200">
+              <Terminal className="w-4 h-4 text-electric-indigo" />
+              <span>Ingest Public Git Repository</span>
+            </div>
+            <div className="text-xs text-gray-400 font-mono flex items-center space-x-2">
+              <span className="w-2 h-2 rounded-full bg-electric-emerald animate-pulse"></span>
+              <span>Worker Engine Ready</span>
             </div>
           </div>
 
-          {/* Ingestion Form */}
-          <form onSubmit={handleIngest} className="space-y-4">
-            <div className="flex flex-col sm:flex-row gap-3">
-              <div className="relative flex-1">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-gray-500">
-                  <GitBranch className="w-4 h-4" />
-                </div>
-                <input
-                  type="text"
-                  value={githubUrl}
-                  onChange={(e) => setGithubUrl(e.target.value)}
-                  placeholder="https://github.com/owner/repository"
-                  className="w-full pl-10 pr-4 py-3 rounded-xl bg-obsidian-base border border-obsidian-border text-white text-sm font-mono focus:outline-none focus:border-electric-indigo focus:ring-1 focus:ring-electric-indigo transition"
-                  required
-                />
-              </div>
-              <div className="w-32">
-                <input
-                  type="text"
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
-                  placeholder="main"
-                  className="w-full px-3.5 py-3 rounded-xl bg-obsidian-base border border-obsidian-border text-white text-sm font-mono focus:outline-none focus:border-electric-indigo focus:ring-1 focus:ring-electric-indigo transition text-center"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="px-6 py-3 rounded-xl bg-gradient-to-r from-electric-indigo to-electric-violet hover:opacity-90 font-medium text-sm text-white flex items-center justify-center space-x-2 shadow-glow transition disabled:opacity-50"
-              >
-                {isSubmitting ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Analyzing...</span>
-                  </>
-                ) : (
-                  <>
-                    <Zap className="w-4 h-4" />
-                    <span>Analyze Codebase</span>
-                  </>
-                )}
-              </button>
+          <form onSubmit={handleIngest} className="flex flex-col md:flex-row items-center gap-3">
+            <div className="relative flex-1 w-full">
+              <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                type="url"
+                required
+                value={githubUrl}
+                onChange={(e) => setGithubUrl(e.target.value)}
+                placeholder="https://github.com/pallets/flask"
+                className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-obsidian-base border border-obsidian-border text-white placeholder-gray-500 text-sm focus:outline-none focus:border-electric-indigo transition font-mono"
+              />
             </div>
+
+            <div className="relative w-full md:w-44">
+              <GitBranch className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" />
+              <input
+                type="text"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                placeholder="main"
+                className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-obsidian-base border border-obsidian-border text-white placeholder-gray-500 text-sm focus:outline-none focus:border-electric-indigo transition font-mono"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="w-full md:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-electric-indigo to-electric-violet hover:from-electric-indigo/90 hover:to-electric-violet/90 text-white font-medium text-sm flex items-center justify-center space-x-2 shadow-glow transition disabled:opacity-50"
+            >
+              {isSubmitting ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Ingesting Pipeline...</span>
+                </>
+              ) : (
+                <>
+                  <Zap className="w-4 h-4" />
+                  <span>Run AST & Vector Pipeline</span>
+                </>
+              )}
+            </button>
 
             {errorMsg && (
               <div className="p-3 rounded-xl bg-electric-rose/10 border border-electric-rose/30 text-electric-rose text-xs flex items-center space-x-2">
@@ -328,51 +355,71 @@ export default function CommandCenter() {
           )}
         </div>
 
-        {/* Metrics Grid */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="glass-card rounded-xl p-4 flex items-center space-x-4">
-            <div className="p-3 rounded-lg bg-electric-indigo/10 border border-electric-indigo/20 text-electric-indigo">
-              <Layers className="w-6 h-6" />
+        {/* Global Metrics Grid */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3.5">
+          <div className="glass-card rounded-xl p-3.5 flex items-center space-x-3">
+            <div className="p-2.5 rounded-lg bg-electric-indigo/10 border border-electric-indigo/20 text-electric-indigo">
+              <Layers className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-2xl font-bold text-white font-mono">{totalRepos}</div>
-              <div className="text-xs text-gray-400">Repositories Ingested</div>
+              <div className="text-xl font-bold text-white font-mono">{totalRepos}</div>
+              <div className="text-[11px] text-gray-400">Repositories</div>
             </div>
           </div>
 
-          <div className="glass-card rounded-xl p-4 flex items-center space-x-4">
-            <div className="p-3 rounded-lg bg-electric-emerald/10 border border-electric-emerald/20 text-electric-emerald">
-              <FileCode className="w-6 h-6" />
+          <div className="glass-card rounded-xl p-3.5 flex items-center space-x-3">
+            <div className="p-2.5 rounded-lg bg-electric-emerald/10 border border-electric-emerald/20 text-electric-emerald">
+              <FileCode className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-2xl font-bold text-white font-mono">{totalFiles.toLocaleString()}</div>
-              <div className="text-xs text-gray-400">Source Files Parsed</div>
+              <div className="text-xl font-bold text-white font-mono">{totalFiles.toLocaleString()}</div>
+              <div className="text-[11px] text-gray-400">Source Files</div>
             </div>
           </div>
 
-          <div className="glass-card rounded-xl p-4 flex items-center space-x-4">
-            <div className="p-3 rounded-lg bg-electric-cyan/10 border border-electric-cyan/20 text-electric-cyan">
-              <Code className="w-6 h-6" />
+          <div className="glass-card rounded-xl p-3.5 flex items-center space-x-3">
+            <div className="p-2.5 rounded-lg bg-electric-cyan/10 border border-electric-cyan/20 text-electric-cyan">
+              <Code className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-2xl font-bold text-white font-mono">{totalLoc.toLocaleString()}</div>
-              <div className="text-xs text-gray-400">Lines of Code (LOC)</div>
+              <div className="text-xl font-bold text-white font-mono">{totalLoc.toLocaleString()}</div>
+              <div className="text-[11px] text-gray-400">Lines of Code</div>
             </div>
           </div>
 
-          <div className="glass-card rounded-xl p-4 flex items-center space-x-4">
-            <div className="p-3 rounded-lg bg-electric-violet/10 border border-electric-violet/20 text-electric-violet">
-              <Cpu className="w-6 h-6" />
+          <div className="glass-card rounded-xl p-3.5 flex items-center space-x-3">
+            <div className="p-2.5 rounded-lg bg-electric-violet/10 border border-electric-violet/20 text-electric-violet">
+              <Cpu className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-2xl font-bold text-white font-mono">{totalSymbols.toLocaleString()}</div>
-              <div className="text-xs text-gray-400">AST Symbols Extracted</div>
+              <div className="text-xl font-bold text-white font-mono">{totalSymbols.toLocaleString()}</div>
+              <div className="text-[11px] text-gray-400">AST Symbols</div>
+            </div>
+          </div>
+
+          <div className="glass-card rounded-xl p-3.5 flex items-center space-x-3">
+            <div className="p-2.5 rounded-lg bg-electric-amber/10 border border-electric-amber/20 text-electric-amber">
+              <Share2 className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-xl font-bold text-white font-mono">{totalDependencies.toLocaleString()}</div>
+              <div className="text-[11px] text-gray-400">Call Edges</div>
+            </div>
+          </div>
+
+          <div className="glass-card rounded-xl p-3.5 flex items-center space-x-3">
+            <div className="p-2.5 rounded-lg bg-pink-500/10 border border-pink-500/20 text-pink-400">
+              <Database className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-xl font-bold text-white font-mono">{totalChunks.toLocaleString()}</div>
+              <div className="text-[11px] text-gray-400">Vector Chunks</div>
             </div>
           </div>
         </div>
 
-        {/* Repositories Grid & Detail Inspector Split View */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Repositories Selector & Main Workspace Split View */}
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* Left Column: Repository Cards List */}
           <div className="lg:col-span-1 space-y-4">
             <h2 className="text-base font-semibold text-gray-200 flex items-center justify-between">
@@ -386,7 +433,7 @@ export default function CommandCenter() {
                 <p className="text-xs text-gray-400">No repositories ingested yet. Enter a GitHub URL above to analyze your first codebase.</p>
               </div>
             ) : (
-              <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+              <div className="space-y-3 max-h-[750px] overflow-y-auto pr-1">
                 {repos.map((repo) => (
                   <div
                     key={repo.id}
@@ -418,18 +465,22 @@ export default function CommandCenter() {
                       </span>
                     </div>
 
-                    <div className="mt-4 pt-3 border-t border-obsidian-border grid grid-cols-3 gap-2 text-center text-xs font-mono">
+                    <div className="mt-3 pt-3 border-t border-obsidian-border grid grid-cols-4 gap-1 text-center text-xs font-mono">
                       <div>
                         <div className="text-gray-400 text-[10px]">Files</div>
                         <div className="font-bold text-gray-200">{repo.total_files}</div>
                       </div>
                       <div>
-                        <div className="text-gray-400 text-[10px]">LOC</div>
-                        <div className="font-bold text-gray-200">{repo.total_loc.toLocaleString()}</div>
-                      </div>
-                      <div>
                         <div className="text-gray-400 text-[10px]">Symbols</div>
                         <div className="font-bold text-electric-indigo">{repo.total_symbols.toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-gray-400 text-[10px]">Edges</div>
+                        <div className="font-bold text-electric-amber">{(repo.total_dependencies || 0).toLocaleString()}</div>
+                      </div>
+                      <div>
+                        <div className="text-gray-400 text-[10px]">Vectors</div>
+                        <div className="font-bold text-pink-400">{(repo.total_chunks || 0).toLocaleString()}</div>
                       </div>
                     </div>
                   </div>
@@ -438,19 +489,116 @@ export default function CommandCenter() {
             )}
           </div>
 
-          {/* Right Column: Code Inspector & AST Symbol Tree */}
-          <div className="lg:col-span-2 space-y-4">
-            <h2 className="text-base font-semibold text-gray-200">
-              Repository Code Inspector
-            </h2>
+          {/* Right Area: Interactive Workspace (Tabs: Graph vs. AI Assistant vs. Search vs. Inspector) */}
+          <div className="lg:col-span-3 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              {/* Tab Switcher */}
+              <div className="flex items-center space-x-1.5 bg-obsidian-surface p-1 rounded-xl border border-obsidian-border text-xs font-mono">
+                <button
+                  onClick={() => setActiveTab("graph")}
+                  className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 font-medium transition ${
+                    activeTab === "graph"
+                      ? "bg-electric-indigo text-white shadow-glow"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  <Network className="w-3.5 h-3.5" />
+                  <span>Dependency Graph</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab("chat")}
+                  className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 font-medium transition ${
+                    activeTab === "chat"
+                      ? "bg-electric-indigo text-white shadow-glow"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  <Bot className="w-3.5 h-3.5 text-indigo-300" />
+                  <span>AI Assistant (RAG)</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab("search")}
+                  className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 font-medium transition ${
+                    activeTab === "search"
+                      ? "bg-electric-indigo text-white shadow-glow"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  <Search className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Code Search</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab("inspector")}
+                  className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 font-medium transition ${
+                    activeTab === "inspector"
+                      ? "bg-electric-indigo text-white shadow-glow"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  <FileCode className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>AST Inspector</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab("audit")}
+                  className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 font-medium transition ${
+                    activeTab === "audit"
+                      ? "bg-electric-indigo text-white shadow-glow"
+                      : "text-gray-400 hover:text-white"
+                  }`}
+                >
+                  <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Security &amp; Quality</span>
+                </button>
+              </div>
+
+              {selectedRepo && (
+                <div className="text-xs font-mono text-gray-400 hidden sm:block">
+                  Active: <strong className="text-white">{selectedRepo.owner}/{selectedRepo.name}</strong>
+                </div>
+              )}
+            </div>
 
             {!selectedRepo ? (
-              <div className="glass-card rounded-xl p-12 text-center space-y-3">
-                <FileCode className="w-12 h-12 text-gray-600 mx-auto" />
-                <p className="text-sm text-gray-400">Select a repository from the left panel to inspect parsed files and extracted AST symbols.</p>
+              <div className="glass-card rounded-xl p-16 text-center space-y-3">
+                <Network className="w-12 h-12 text-gray-600 mx-auto" />
+                <p className="text-sm text-gray-400">Select a repository from the left panel to inspect dependencies, search code, or query AI assistant.</p>
               </div>
+            ) : activeTab === "graph" ? (
+              /* TAB 1: React Flow Dependency Graph */
+              <DependencyGraph
+                repositoryId={selectedRepo.id}
+                onSelectSymbol={(symId) => {
+                  // Optional symbol selection callback
+                }}
+              />
+            ) : activeTab === "chat" ? (
+              /* TAB 2: Grounded Gemini RAG Chat Cockpit */
+              <div className="h-[750px]">
+                <ChatAssistant
+                  repositoryId={selectedRepo.id}
+                  repositoryName={`${selectedRepo.owner}/${selectedRepo.name}`}
+                  embeddingModel={selectedRepo.embedding_model || "models/gemini-embedding-2"}
+                  onSelectFile={handleSelectFileFromCitation}
+                />
+              </div>
+            ) : activeTab === "search" ? (
+              /* TAB 3: Hybrid & Vector Code Search */
+              <div className="h-[750px]">
+                <CodeSearch
+                  repositoryId={selectedRepo.id}
+                  languages={Object.keys(selectedRepo.language_breakdown || {})}
+                  onSelectFile={handleSelectFileFromCitation}
+                />
+              </div>
+            ) : activeTab === "audit" ? (
+              /* TAB 4: Security & Code Quality Intelligence Console */
+              <SecurityAuditDashboard
+                repositoryId={selectedRepo.id}
+                onNavigateToFile={handleSelectFileFromCitation}
+              />
             ) : (
-              <div className="glass-panel rounded-xl overflow-hidden border border-obsidian-border flex flex-col md:flex-row h-[600px]">
+              /* TAB 5: Source Code & AST Inspector */
+              <div className="glass-panel rounded-xl overflow-hidden border border-obsidian-border flex flex-col md:flex-row h-[750px]">
                 {/* File Hierarchy Selector */}
                 <div className="w-full md:w-1/3 border-b md:border-b-0 md:border-r border-obsidian-border bg-obsidian-surface/60 overflow-y-auto p-3 space-y-1">
                   <div className="text-xs font-mono text-gray-400 px-2 py-1 uppercase font-bold border-b border-obsidian-border mb-2">
@@ -509,7 +657,9 @@ export default function CommandCenter() {
                                     <span className={`px-1.5 py-0.5 rounded text-[10px] uppercase font-bold ${
                                       sym.kind === "function" ? "bg-electric-indigo/20 text-electric-indigo" :
                                       sym.kind === "class" ? "bg-electric-violet/20 text-electric-violet" :
+                                      sym.kind === "db_model" ? "bg-electric-violet/20 text-electric-violet" :
                                       sym.kind === "api_endpoint" ? "bg-electric-emerald/20 text-electric-emerald" :
+                                      sym.kind === "component" ? "bg-electric-cyan/20 text-electric-cyan" :
                                       "bg-electric-cyan/20 text-electric-cyan"
                                     }`}>
                                       {sym.kind}

@@ -1,3 +1,4 @@
+@import "@xyflow/react/dist/style.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -71,4 +72,45 @@ body {
 
 .animate-pulse-glow {
   animation: pulseGlow 2.5s infinite ease-in-out;
+}
+
+/* React Flow Dark Theme Overrides */
+.react-flow__background {
+  background-color: #0B0D13 !important;
+}
+
+.react-flow__controls {
+  background-color: #131620 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background-color: #131620 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  color: #9CA3AF !important;
+  fill: #9CA3AF !important;
+}
+
+.react-flow__controls-button:hover {
+  background-color: #1A1E2E !important;
+  color: #FFFFFF !important;
+  fill: #FFFFFF !important;
+}
+
+.react-flow__minimap {
+  background-color: #131620 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 8px !important;
+}
+
+.react-flow__edge-path {
+  stroke: rgba(99, 102, 241, 0.6) !important;
+  stroke-width: 2 !important;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #8B5CF6 !important;
+  stroke-width: 3 !important;
 }
