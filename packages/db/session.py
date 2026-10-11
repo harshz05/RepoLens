@@ -47,6 +47,7 @@ async def init_db() -> None:
                 "ALTER TABLE code_chunks ADD COLUMN embedding_model VARCHAR(100);",
                 "ALTER TABLE code_chunks ADD COLUMN embedding_dimension INTEGER;",
                 "ALTER TABLE code_chunks ADD COLUMN embedding TEXT;",
+                "ALTER TABLE symbols ADD COLUMN metadata_json TEXT;",
             ]:
                 try:
                     await conn.execute(text(col_stmt))

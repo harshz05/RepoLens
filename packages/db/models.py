@@ -149,6 +149,21 @@ class File(Base):
     repository_version: Mapped["RepositoryVersion"] = relationship("RepositoryVersion", back_populates="files")
     symbols: Mapped[List["Symbol"]] = relationship("Symbol", back_populates="file", cascade="all, delete-orphan")
     code_chunks: Mapped[List["CodeChunk"]] = relationship("CodeChunk", back_populates="file", cascade="all, delete-orphan")
+    content: Mapped[Optional["FileContent"]] = relationship("FileContent", back_populates="file", cascade="all, delete-orphan", uselist=False)
+
+class FileContent(Base):
+    """
+    Original source text of an indexed file (1:1 with File).
+    Kept in a separate table so file listings/graph queries never load large text columns.
+    Required by the audit pipeline, which must analyse the exact original source
+    (chunks contain injected headers/overlaps and cannot be used to reconstruct it).
+    """
+    __tablename__ = "file_contents"
+
+    file_id: Mapped[str] = mapped_column(String(36), ForeignKey("files.id", ondelete="CASCADE"), primary_key=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    file: Mapped["File"] = relationship("File", back_populates="content")
 
 class Symbol(Base):
     __tablename__ = "symbols"
@@ -169,6 +184,7 @@ class Symbol(Base):
     end_col: Mapped[int] = mapped_column(Integer, nullable=False)
     signature: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     docstring: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON: decorators, route, http_method, ...
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     file: Mapped["File"] = relationship("File", back_populates="symbols")
@@ -360,4 +376,3 @@ class QualityFinding(Base):
     audit_run: Mapped["AuditRun"] = relationship("AuditRun", back_populates="quality_findings")
     file: Mapped["File"] = relationship("File", lazy="selectin")
     symbol: Mapped[Optional["Symbol"]] = relationship("Symbol", lazy="selectin")
-

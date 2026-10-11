@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import tempfile
 import hashlib
@@ -10,7 +11,7 @@ from typing import Dict, List, Callable, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from packages.db.models import Repository, RepositoryVersion, AnalysisRun, File, Symbol, Dependency
+from packages.db.models import Repository, RepositoryVersion, AnalysisRun, File, FileContent, Symbol, Dependency
 from packages.code_intel.file_filter import scan_repository_files
 from packages.code_intel.parsers.registry import parser_registry
 from packages.code_intel.graph.builder import DependencyGraphBuilder
@@ -184,6 +185,14 @@ async def run_ingestion_pipeline(analysis_run_id: str, session: AsyncSession) ->
                 await session.flush()  # Generate file_rec.id
                 file_db_map[path_str] = file_rec.id
 
+                # Persist original source (needed by the audit pipeline; see FileContent docstring)
+                session.add(
+                    FileContent(
+                        file_id=file_rec.id,
+                        content=code_bytes.decode("utf-8", errors="ignore"),
+                    )
+                )
+
                 # Tree-sitter AST Extraction
                 ctx = parser_registry.parse_file(code_bytes, path_str)
                 if ctx:
@@ -200,6 +209,7 @@ async def run_ingestion_pipeline(analysis_run_id: str, session: AsyncSession) ->
                             end_col=sym.end_col,
                             signature=sym.signature,
                             docstring=sym.docstring,
+                            metadata_json=json.dumps(sym.metadata, default=str) if sym.metadata else None,
                         )
                         session.add(sym_rec)
                         await session.flush()
@@ -408,4 +418,3 @@ async def reindex_repository_version(version_id: str, session: AsyncSession) -> 
     version.embedding_dimension = provider.dimension
     await session.commit()
     return len(chunks)
-

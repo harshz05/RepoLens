@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Configure git (tests create local fixture repos)
+        run: |
+          git config --global user.email "ci@repolens.dev"
+          git config --global user.name "CI"
+      - name: Run tests
+        env:
+          DATABASE_URL: sqlite+aiosqlite:///./ci_test.db
+        run: python -m pytest -q

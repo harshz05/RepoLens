@@ -29,3 +29,11 @@ async def test_list_repositories():
         response = await client.get("/api/v1/repositories")
         assert response.status_code == 200
         assert isinstance(response.json(), list)
+
+@pytest.mark.asyncio
+async def test_cors_rejects_unlisted_origin():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        bad = await client.get("/", headers={"Origin": "https://evil.example"})
+        assert "access-control-allow-origin" not in bad.headers
+        ok = await client.get("/", headers={"Origin": "http://localhost:3000"})
+        assert ok.headers.get("access-control-allow-origin") == "http://localhost:3000"

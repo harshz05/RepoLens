@@ -1,4 +1,5 @@
 import json
+import logging
 import asyncio
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -9,6 +10,7 @@ from packages.db.models import (
     AuditRun,
     RepositoryVersion,
     File,
+    FileContent,
     Symbol,
     Dependency,
     SecurityFinding,
@@ -28,6 +30,21 @@ from packages.code_intel.quality.coupling import CouplingAnalyzer
 from packages.code_intel.audit.health_score import HealthScoreCalculator
 from packages.code_intel.audit.ai_advisor import AIAuditAdvisor
 from services.worker.ingestion_worker import EventBroker
+
+logger = logging.getLogger(__name__)
+
+FILE_BATCH_SIZE = 100  # files loaded per DB round-trip (bounds memory on large repos)
+
+
+def _load_metadata(raw: Optional[str]) -> dict:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
 
 async def emit_audit_progress(
     session: AsyncSession,
@@ -120,8 +137,14 @@ async def run_audit_pipeline(
                     signature=s.signature,
                     docstring=s.docstring,
                     file_path=f_path,
+                    metadata=_load_metadata(s.metadata_json),
                 )
             )
+
+        # Group once: avoids O(files x symbols) filtering inside the file loop
+        symbols_by_path: Dict[str, List[ExtractedSymbol]] = {}
+        for es in extracted_symbols:
+            symbols_by_path.setdefault(es.file_path or "", []).append(es)
 
         resolved_deps: List[ResolvedDependency] = []
         for d in dependencies:
@@ -154,70 +177,91 @@ async def run_audit_pipeline(
         raw_security_findings = []
         quality_findings: List[QualityFindingData] = []
 
-        # We can reconstruct contexts for AST rules
-        for idx, f in enumerate(files, start=1):
-            code_bytes = b""
-            # If code chunk content exists, we can reconstruct or load from code chunks
-            # Or parse from chunks table
-            from packages.db.models import CodeChunk
-            chunk_stmt = select(CodeChunk).where(CodeChunk.file_id == f.id).order_by(CodeChunk.start_line)
-            chunk_res = await session.execute(chunk_stmt)
-            chunks = chunk_res.scalars().all()
-            code_text = "\n".join(c.content for c in chunks)
-            code_bytes = code_text.encode("utf-8", errors="ignore")
+        # Source is loaded in batches from file_contents (original text, exact line numbers).
+        files_scanned = 0
+        files_missing_source = 0
 
-            # Context
-            f_symbols = [s for s in extracted_symbols if s.file_path == f.path]
-            f_ctx = ExtractedFileContext(
-                file_path=f.path,
-                language=f.language,
-                symbols=f_symbols,
+        for batch_start in range(0, len(files), FILE_BATCH_SIZE):
+            batch = files[batch_start:batch_start + FILE_BATCH_SIZE]
+            content_res = await session.execute(
+                select(FileContent).where(FileContent.file_id.in_([bf.id for bf in batch]))
             )
+            content_map = {c.file_id: c.content for c in content_res.scalars().all()}
 
-            # Security scan
-            f_findings = security_registry.scan_file(
-                code_text=code_text,
-                file_path=f.path,
-                language=f.language,
-                context=f_ctx,
-            )
-            raw_security_findings.extend(f_findings)
+            for f in batch:
+                code_text = content_map.get(f.id)
+                if code_text is None:
+                    files_missing_source += 1
+                    continue
+                files_scanned += 1
+                code_bytes = code_text.encode("utf-8", errors="ignore")
 
-            # Quality metrics per file
-            file_qual = CodeMetricsAnalyzer.analyze_file_metrics(
-                code_text=code_text,
-                file_path=f.path,
-                language=f.language,
-                context=f_ctx,
-            )
-            quality_findings.extend(file_qual)
+                # Re-parse the original source: gives rules real call references + symbol metadata
+                parsed_ctx = parser_registry.parse_file(code_bytes, f.path)
+                f_symbols = symbols_by_path.get(f.path, [])
+                f_ctx = ExtractedFileContext(
+                    file_path=f.path,
+                    language=f.language,
+                    symbols=f_symbols,
+                    calls=parsed_ctx.calls if parsed_ctx else [],
+                    imports=parsed_ctx.imports if parsed_ctx else [],
+                )
 
-            # Complexity calculation per function
-            cc_results = CyclomaticComplexityCalculator.calculate_for_symbols(
-                code_bytes=code_bytes,
-                file_path=f.path,
-                language=f.language,
-            )
-            for fn_name, s_line, e_line, cc in cc_results:
-                if cc > 10:
-                    sev = "CRITICAL" if cc > 30 else ("HIGH" if cc > 20 else "MEDIUM")
-                    quality_findings.append(
-                        QualityFindingData(
-                            rule_id="QUAL-001",
-                            metric_name="cyclomatic_complexity",
-                            title=f"High Cyclomatic Complexity ({fn_name}: {cc})",
-                            description=f"Function '{fn_name}' has cyclomatic complexity of {cc} (threshold: 10). High branching logic significantly increases defect density.",
-                            severity=sev,
-                            confidence=1.0,
-                            value=float(cc),
-                            threshold=10.0,
-                            file_path=f.path,
-                            start_line=s_line,
-                            end_line=e_line,
-                            recommendation="Refactor branching conditions into smaller polymorphic methods or lookup dispatch tables.",
-                            symbol_fqn=f"{f.path}::{fn_name}",
+                # Security scan
+                f_findings = security_registry.scan_file(
+                    code_text=code_text,
+                    file_path=f.path,
+                    language=f.language,
+                    context=f_ctx,
+                )
+                raw_security_findings.extend(f_findings)
+
+                # Quality metrics per file
+                file_qual = CodeMetricsAnalyzer.analyze_file_metrics(
+                    code_text=code_text,
+                    file_path=f.path,
+                    language=f.language,
+                    context=f_ctx,
+                )
+                quality_findings.extend(file_qual)
+
+                # Complexity calculation per function
+                cc_results = CyclomaticComplexityCalculator.calculate_for_symbols(
+                    code_bytes=code_bytes,
+                    file_path=f.path,
+                    language=f.language,
+                )
+                for fn_name, s_line, e_line, cc in cc_results:
+                    if cc > 10:
+                        sev = "CRITICAL" if cc > 30 else ("HIGH" if cc > 20 else "MEDIUM")
+                        quality_findings.append(
+                            QualityFindingData(
+                                rule_id="QUAL-001",
+                                metric_name="cyclomatic_complexity",
+                                title=f"High Cyclomatic Complexity ({fn_name}: {cc})",
+                                description=f"Function '{fn_name}' has cyclomatic complexity of {cc} (threshold: 10). High branching logic significantly increases defect density.",
+                                severity=sev,
+                                confidence=1.0,
+                                value=float(cc),
+                                threshold=10.0,
+                                file_path=f.path,
+                                start_line=s_line,
+                                end_line=e_line,
+                                recommendation="Refactor branching conditions into smaller polymorphic methods or lookup dispatch tables.",
+                                symbol_fqn=f"{f.path}::{fn_name}",
+                            )
                         )
-                    )
+
+        if files_scanned == 0:
+            audit_run.status = "FAILED"
+            audit_run.error_log = (
+                "No stored source found for this repository version. "
+                "Re-ingest the repository so original file contents are persisted."
+            )
+            await emit_audit_progress(session, audit_run, "FAILED", 0.0, audit_run.error_log)
+            return
+        if files_missing_source:
+            logger.warning("Audit %s: %d files had no stored source and were skipped", audit_run.id, files_missing_source)
 
         # Stage 3: Graph Reachability Security Analysis
         await emit_audit_progress(

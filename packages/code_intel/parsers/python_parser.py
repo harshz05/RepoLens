@@ -4,6 +4,7 @@ from tree_sitter import Language, Parser, Node
 import tree_sitter_python as tspython
 
 from packages.code_intel.parsers.base import BaseLanguageParser
+from packages.code_intel.parsers.route_utils import extract_route_info
 from packages.code_intel.models import (
     ExtractedSymbol,
     RawCallReference,
@@ -175,15 +176,18 @@ class PythonTreeSitterParser(BaseLanguageParser):
                     decorators = self._extract_decorators(node, code_bytes)
                     kind = "method" if current_class else "function"
 
+                    route_meta: Dict[str, Any] = {}
                     for dec in decorators:
                         dec_lower = dec.lower()
                         if any(m in dec_lower for m in [".get(", ".post(", ".put(", ".delete(", ".patch(", "@app.", "@router.", "@bp.route", ".route("]):
                             kind = "api_endpoint"
+                            route_meta = extract_route_info(dec) or {}
                             framework_meta["routes"].append({
                                 "name": func_name,
                                 "fqn": fqn,
                                 "decorator": dec,
                                 "line": s_line,
+                                **route_meta,
                             })
                             break
 
@@ -200,7 +204,7 @@ class PythonTreeSitterParser(BaseLanguageParser):
                             docstring=docstring,
                             file_path=file_path,
                             parent_fqn=get_current_caller_fqn(),
-                            metadata={"decorators": decorators, "is_async": is_async},
+                            metadata={"decorators": decorators, "is_async": is_async, **route_meta},
                         )
                     )
 
