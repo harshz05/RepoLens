@@ -34,9 +34,17 @@ This document serves as the permanent engineering decision log for **RepoLens**.
 - [ADR-021: Anti-Hallucination XML/CDATA Context Fencing & Post-Generation Citation Verification](#adr-021-anti-hallucination-xmlcdata-context-fencing--post-generation-citation-verification)
 - [ADR-022: Next.js 15 Conversational RAG & Code Search Obsidian Cockpit](#adr-022-nextjs-15-conversational-rag--code-search-obsidian-cockpit)
 
+### Milestone 4: Security & Quality Audit Engine
+- [ADR-023: Persist Original Source in a Separate `file_contents` Table](#adr-023-persist-original-source-in-a-separate-file_contents-table)
+- [ADR-024: Persist Symbol Metadata & Extract HTTP Route Info at Parse Time](#adr-024-persist-symbol-metadata--extract-http-route-info-at-parse-time)
+- [ADR-025: Explicit CORS Origin Allow-List](#adr-025-explicit-cors-origin-allow-list)
+- [ADR-026: Central Redaction & Rule-Failure Reporting in the Registry](#adr-026-central-redaction--rule-failure-reporting-in-the-registry)
+- [ADR-027: Logical-Line Scanning for Pattern Rules](#adr-027-logical-line-scanning-for-pattern-rules)
+
 ### Appendix
 - [Milestone 2 Technical Debt / Known Limitations](#milestone-2-technical-debt--known-limitations)
 - [Milestone 3 Technical Debt / Known Limitations](#milestone-3-technical-debt--known-limitations)
+- [Milestone 4 Technical Debt / Known Limitations](#milestone-4-technical-debt--known-limitations-running-list)
 
 ---
 
@@ -407,6 +415,83 @@ This document serves as the permanent engineering decision log for **RepoLens**.
 
 ---
 
+## Milestone 4 Decisions
+
+### ADR-023: Persist Original Source in a Separate `file_contents` Table
+
+1. **Decision:** Store each indexed file's exact original text in `file_contents` (1:1 with `files`, primary key `file_id`), written during ingestion. The audit pipeline reads this table and re-parses the source instead of reconstructing it from `code_chunks`.
+2. **Context / Problem:** Ingestion clones into a temp directory and deletes it, so source was never persisted. The first audit implementation joined `code_chunks.content` to rebuild files. Chunks contain injected `// File:` headers, 10-line overlap windows for large symbols, duplicated lines (a class chunk contains its methods, which are also chunked separately) and dropped whitespace gaps. Findings therefore had wrong line numbers, duplicates, and corrupted text for tree-sitter.
+3. **Chosen Approach:** New `FileContent` model in a separate table (so file listings and graph queries never load large text). Audit loads contents in batches of 100 files, re-parses with `parser_registry` to obtain real call references, and fails with a clear message ("re-ingest") for versions ingested before this change.
+4. **Why:** Exact line numbers and evidence; audits are re-runnable when rules change without re-cloning; analysis stays decoupled from ingestion.
+5. **Alternatives Considered:** (a) run all rules inside the ingestion worker; (b) re-clone on every audit; (c) keep reconstructing from chunks.
+6. **Why Rejected:** (a) couples rules to ingestion, so a rule update forces full re-ingest; (b) slow, and the remote may have moved past the indexed commit; (c) fundamentally lossy (see Context).
+7. **Trade-offs:** Extra storage (the same text already exists in chunks) and one extra table; very large files increase row size.
+8. **Consequences:** Correct line numbers, deduplicated findings, `ExtractedFileContext.calls` populated (the AST path of SEC-002 now runs). Existing databases need a re-ingest.
+9. **When We Would Reconsider:** If storage cost dominates, move content to object storage keyed by `sha256_hash` (also enables cross-version dedup).
+10. **Interview-Ready Explanation:** *"The audit must report exact line numbers, so it needs the original source. I first rebuilt files from embedding chunks, which contain injected headers and overlaps, so findings pointed at wrong lines. I now persist source in a separate table so listings stay fast and audits can be re-run whenever rules change."*
+
+---
+
+### ADR-024: Persist Symbol Metadata & Extract HTTP Route Info at Parse Time
+
+1. **Decision:** Add `symbols.metadata_json` and have the Python parser attach `route` and `http_method` (parsed from the decorator text) to `api_endpoint` symbols. The audit worker rehydrates metadata from the column.
+2. **Context / Problem:** Rules and the graph analyzer depend on symbol metadata, but the `symbols` table had no such column and the parser never set `route`/`http_method`, so SEC-010 (unprotected sensitive endpoint) could never fire.
+3. **Chosen Approach:** Pure string/regex parsing in `route_utils.extract_route_info` (never imports or executes repository code); JSON text column (portable across SQLite and PostgreSQL); SQLite dev DBs get an `ALTER TABLE` in `init_db`.
+4. **Why:** Keeps the schema stable while metadata evolves; no new tables per framework.
+5. **Alternatives Considered:** Re-derive metadata by re-parsing at audit time only; typed columns (`route`, `http_method`); PostgreSQL `JSONB`.
+6. **Why Rejected:** Re-parsing duplicates logic and hides data from the API/UI; typed columns over-fit one framework; `JSONB` is not portable to the SQLite fallback.
+7. **Trade-offs:** Metadata is not indexed/queryable in SQL; JSON is stored as text.
+8. **Consequences:** SEC-010 and entrypoint detection work from persisted data. TypeScript/Express route detection is still missing (known gap).
+9. **When We Would Reconsider:** If we need to query by route (e.g. an "all public endpoints" view), promote `route`/`http_method` to indexed columns or move to `JSONB` on PostgreSQL only.
+10. **Interview-Ready Explanation:** *"Route information is derived statically from decorator text, never by running the repo. I store it as JSON on the symbol so the schema doesn't change for every framework, and I can promote hot fields to columns if I need to query them."*
+
+---
+
+### ADR-025: Explicit CORS Origin Allow-List
+
+1. **Decision:** Replace `allow_origins=["*"]` + `allow_credentials=True` with an allow-list from the `CORS_ORIGINS` environment variable (default: localhost:3000), and restrict methods/headers to those used.
+2. **Context / Problem:** Wildcard origin with credentials is a known misconfiguration, and RepoLens' own SEC-007 rule flags exactly this pattern in `main.py`.
+3. **Chosen Approach:** Comma-separated env var parsed at startup; covered by a test asserting an unlisted origin receives no CORS headers.
+4. **Why:** Production-safe by default; deployment only needs to set one variable.
+5. **Alternatives Considered:** Keep wildcard (credentials dropped); reverse proxy handling CORS.
+6. **Why Rejected:** Wildcard weakens future auth work; a proxy adds infrastructure for a one-line concern.
+7. **Trade-offs:** Each new frontend domain needs a config change.
+8. **Consequences:** The scanner no longer flags its own API (useful for the self-scan demo).
+9. **When We Would Reconsider:** Multi-tenant dynamic origins would need a validated origin-matching function.
+10. **Interview-Ready Explanation:** *"My own scanner flagged my API's CORS config, so I fixed it with an explicit allow-list and added a regression test."*
+
+---
+
+### ADR-026: Central Redaction & Rule-Failure Reporting in the Registry
+
+1. **Decision:** `SecurityRuleRegistry.scan_file` redacts every finding's `evidence` and `description` with `SecretRedactor`, and records (logs + returns) any rule that raises instead of silently skipping it.
+2. **Context / Problem:** Only SEC-001 redacted its own evidence, so a secret on a line flagged by any other rule (e.g. a token inside a `subprocess` call) was stored in the DB and could be sent to Gemini. Rule exceptions were swallowed with `except: continue`, so a broken rule looked identical to "no findings".
+3. **Chosen Approach:** Redact once, at the registry boundary (after rules return). `scan_file(errors=...)` appends `{rule_id, file_path, error}`; the audit worker stores the count and samples in `summary_metrics_json`.
+4. **Why:** One enforcement point means new rules are safe by default; failures become visible and testable.
+5. **Alternatives Considered:** Each rule calls the redactor itself; redact only at API/serialization time.
+6. **Why Rejected:** Per-rule redaction is easy to forget; serialization-time redaction still leaves raw secrets in the DB and LLM prompts.
+7. **Trade-offs:** Redaction is pattern-based, so unknown secret formats can still slip through; it costs a few regex passes per finding.
+8. **Consequences:** Secrets never reach storage or the AI advisor via evidence; rule crashes show up in logs and audit summaries.
+9. **When We Would Reconsider:** Adding a real secret-scanner (entropy + provider-verified patterns) behind the same boundary.
+10. **Interview-Ready Explanation:** *"Redaction is enforced at one choke point, the registry, not left to each rule. And a failing rule is reported instead of looking like a clean scan: silent failures in a security tool are worse than noisy ones."*
+
+---
+
+### ADR-027: Logical-Line Scanning for Pattern Rules
+
+1. **Decision:** Pattern rules scan *logical lines* (physical lines joined while brackets are unbalanced, capped at 12 lines) instead of single physical lines.
+2. **Context / Problem:** Rules matched one physical line at a time, so formatter-style code such as `subprocess.run(\n cmd,\n shell=True\n)` was missed entirely.
+3. **Chosen Approach:** `iter_logical_lines` yields `(start_line, end_line, text)`; findings carry the real line span and whitespace-compacted evidence.
+4. **Why:** Cheap, language-agnostic, and removes the most common false-negative without needing a full parser per rule.
+5. **Alternatives Considered:** Run regexes over the whole file with DOTALL; move every rule to tree-sitter queries.
+6. **Why Rejected:** Whole-file DOTALL regex causes catastrophic matches across unrelated statements and wrong line numbers; tree-sitter rules are the right long-term direction but a much larger rewrite.
+7. **Trade-offs:** Bracket counting ignores string literals, so odd strings can mis-join (bounded by the 12-line cap).
+8. **Consequences:** Multi-line calls are detected with accurate start/end lines.
+9. **When We Would Reconsider:** Migrating high-value rules (subprocess, SQL) to AST queries for true argument-level analysis.
+10. **Interview-Ready Explanation:** *"Line-based regex misses multi-line calls, and whole-file regex gives bad line numbers. Joining physical lines into bounded logical lines fixed the common case cheaply, and AST queries are the planned upgrade."*
+
+---
+
 ## Milestone 2 Technical Debt / Known Limitations
 
 The following engineering limitations exist within the Milestone 2 static dependency graph engine and represent documented boundaries of purely static analysis:
@@ -440,5 +525,12 @@ The following engineering limitations exist within the Milestone 3 Vector Embedd
    - In extremely large repositories where hundreds of chunks match a generic query, the top-k cutoff (`limit=10`) bounds the context window. Multi-turn iterative refinement and hierarchical repository map summarization are scheduled for Milestone 4.
 
 ---
-*End of Architecture Decision Records — RepoLens Platform*
+## Milestone 4 Technical Debt / Known Limitations (running list)
 
+1. **Pre-existing indexes need a re-ingest:** versions ingested before ADR-023 have no stored source; audits fail with a clear message.
+2. **No schema migrations yet:** tables are created via `create_all`; only SQLite dev DBs get ad-hoc `ALTER TABLE`. Alembic is planned before deployment.
+3. **Most rules are pattern matches (`STATIC_RULE`):** they are labelled honestly now, but there is still no data-flow/taint analysis, so they cannot prove user input reaches a sink.
+4. **Entrypoint detection is Python-only:** TypeScript/Express routes are not yet marked as `api_endpoint`.
+
+---
+*End of Architecture Decision Records — RepoLens Platform*

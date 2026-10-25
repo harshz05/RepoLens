@@ -175,6 +175,7 @@ async def run_audit_pipeline(
         )
 
         raw_security_findings = []
+        rule_errors: List[dict] = []  # rules that crashed (reported in the audit summary, never silent)
         quality_findings: List[QualityFindingData] = []
 
         # Source is loaded in batches from file_contents (original text, exact line numbers).
@@ -213,6 +214,7 @@ async def run_audit_pipeline(
                     file_path=f.path,
                     language=f.language,
                     context=f_ctx,
+                    errors=rule_errors,
                 )
                 raw_security_findings.extend(f_findings)
 
@@ -330,7 +332,11 @@ async def run_audit_pipeline(
         audit_run.complexity_score = health_matrix.complexity_score
         audit_run.coupling_score = health_matrix.coupling_score
         audit_run.architecture_score = health_matrix.architecture_score
-        audit_run.summary_metrics_json = json.dumps(health_matrix.dimensions_summary)
+        summary = dict(health_matrix.dimensions_summary)
+        summary["security_rule_errors"] = len(rule_errors)
+        if rule_errors:
+            summary["security_rule_error_samples"] = rule_errors[:5]
+        audit_run.summary_metrics_json = json.dumps(summary)
 
         # Persist Security Findings
         for sf in enriched_security_findings:

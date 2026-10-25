@@ -25,7 +25,7 @@ class WeakCryptographyRule(BaseSecurityRule):
 
     @property
     def detection_source(self) -> DetectionSource:
-        return DetectionSource.AST_ANALYSIS
+        return DetectionSource.STATIC_RULE
 
     PATTERNS = [
         ("Python hashlib.md5", re.compile(r"""\bhashlib\.md5\s*\((?!.*usedforsecurity\s*=\s*False)"""), 0.88),
@@ -58,7 +58,7 @@ class WeakCryptographyRule(BaseSecurityRule):
                             description="MD5 and SHA-1 have known collision vulnerabilities and should not be used for security-critical contexts (integrity verification, token signing, or password storage).",
                             severity=FindingSeverity.MEDIUM,
                             confidence=confidence,
-                            detection_source=DetectionSource.AST_ANALYSIS,
+                            detection_source=DetectionSource.STATIC_RULE,
                             file_path=file_path,
                             start_line=idx,
                             end_line=idx,

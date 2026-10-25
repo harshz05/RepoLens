@@ -1,7 +1,7 @@
 import re
 from typing import List, Optional
 from packages.code_intel.models import ExtractedFileContext
-from packages.code_intel.security.base_rule import BaseSecurityRule
+from packages.code_intel.security.base_rule import BaseSecurityRule, iter_logical_lines, compact_evidence
 from packages.code_intel.security.models import RawSecurityFinding, FindingSeverity, DetectionSource
 
 class SQLInjectionRule(BaseSecurityRule):
@@ -25,7 +25,7 @@ class SQLInjectionRule(BaseSecurityRule):
 
     @property
     def detection_source(self) -> DetectionSource:
-        return DetectionSource.AST_ANALYSIS
+        return DetectionSource.STATIC_RULE
 
     SQL_KEYWORDS = re.compile(r"""\b(SELECT\s+.*?\s+FROM|INSERT\s+INTO|UPDATE\s+.*?\s+SET|DELETE\s+FROM)\b""", re.IGNORECASE)
 
@@ -49,16 +49,11 @@ class SQLInjectionRule(BaseSecurityRule):
         context: Optional[ExtractedFileContext] = None,
     ) -> List[RawSecurityFinding]:
         findings: List[RawSecurityFinding] = []
-        lines = code_text.splitlines()
 
-        # Check line-by-line and multi-line buffer
-        for idx, line in enumerate(lines, start=1):
-            stripped = line.strip()
-            if stripped.startswith("#") or stripped.startswith("//"):
-                continue
-
+        # Logical lines: multi-line execute(f"""...""") calls are matched as one statement.
+        for start, end, text in iter_logical_lines(code_text):
             for pattern in self.PATTERNS:
-                if pattern.search(line):
+                if pattern.search(text):
                     findings.append(
                         RawSecurityFinding(
                             rule_id=self.rule_id,
@@ -67,11 +62,11 @@ class SQLInjectionRule(BaseSecurityRule):
                             description="Identified raw SQL query constructed via dynamic string formatting or interpolation in database execution call. If variables are unescaped user input, this allows arbitrary SQL injection.",
                             severity=FindingSeverity.HIGH,
                             confidence=0.88,
-                            detection_source=DetectionSource.AST_ANALYSIS,
+                            detection_source=DetectionSource.STATIC_RULE,
                             file_path=file_path,
-                            start_line=idx,
-                            end_line=idx,
-                            evidence=line.strip(),
+                            start_line=start,
+                            end_line=end,
+                            evidence=compact_evidence(text),
                             remediation="Use parameterized queries / bind parameters (e.g. `cursor.execute('SELECT * FROM users WHERE id = %s', (user_id,))` or SQLAlchemy ORM filters) rather than string interpolation.",
                         )
                     )

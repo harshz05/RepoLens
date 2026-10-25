@@ -1,7 +1,7 @@
 import re
 from typing import List, Optional
 from packages.code_intel.models import ExtractedFileContext
-from packages.code_intel.security.base_rule import BaseSecurityRule
+from packages.code_intel.security.base_rule import BaseSecurityRule, iter_logical_lines, compact_evidence
 from packages.code_intel.security.models import RawSecurityFinding, FindingSeverity, DetectionSource
 
 class PathTraversalRule(BaseSecurityRule):
@@ -25,7 +25,7 @@ class PathTraversalRule(BaseSecurityRule):
 
     @property
     def detection_source(self) -> DetectionSource:
-        return DetectionSource.AST_ANALYSIS
+        return DetectionSource.STATIC_RULE
 
     PATTERNS = [
         # Python open() with f-string or string concat containing variable
@@ -45,16 +45,10 @@ class PathTraversalRule(BaseSecurityRule):
         context: Optional[ExtractedFileContext] = None,
     ) -> List[RawSecurityFinding]:
         findings: List[RawSecurityFinding] = []
-        lines = code_text.splitlines()
 
-        for idx, line in enumerate(lines, start=1):
-            stripped = line.strip()
-            if stripped.startswith("#") or stripped.startswith("//"):
-                continue
-
+        for start, end, text in iter_logical_lines(code_text):
             for pattern in self.PATTERNS:
-                if pattern.search(line):
-                    # Check if file has an abspath or resolve check in proximity
+                if pattern.search(text):
                     findings.append(
                         RawSecurityFinding(
                             rule_id=self.rule_id,
@@ -63,11 +57,11 @@ class PathTraversalRule(BaseSecurityRule):
                             description="File system operation accepts dynamic path components. Without canonical path verification (e.g. `os.path.commonpath` or `path.resolve`), an attacker can use `../` sequences to access unauthorized system files.",
                             severity=FindingSeverity.HIGH,
                             confidence=0.82,
-                            detection_source=DetectionSource.AST_ANALYSIS,
+                            detection_source=DetectionSource.STATIC_RULE,
                             file_path=file_path,
-                            start_line=idx,
-                            end_line=idx,
-                            evidence=line.strip(),
+                            start_line=start,
+                            end_line=end,
+                            evidence=compact_evidence(text),
                             remediation="Sanitize user-provided file paths by resolving absolute paths and verifying that the target path begins strictly within the intended root directory (e.g. using `os.path.commonpath`).",
                         )
                     )

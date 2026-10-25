@@ -59,5 +59,17 @@ Run backend unit and integration test suites:
 pytest tests/
 ```
 
+Some tests build a throwaway local git repository, so `git` must be installed and `user.name` / `user.email` configured (CI sets these automatically).
+
+## 6. Configuration Notes
+
+- `CORS_ORIGINS` — comma-separated list of allowed frontend origins (default `http://localhost:3000,http://127.0.0.1:3000`). Add your deployed frontend URL here.
+- **Upgrading an existing dev database:** the audit pipeline needs stored source (`file_contents`) and symbol metadata. SQLite dev DBs gain the new column automatically, but repositories ingested earlier must be **re-ingested** before they can be audited. Deleting `repolens_dev.db` is the simplest reset.
+- **Windows:** git may check files out with CRLF line endings; the tests normalise newlines, and stored source keeps the original bytes.
+
+## 7. Continuous Integration
+
+`.github/workflows/ci.yml` runs `pytest` on every push to `main` and on pull requests.
+
 ---
 *End of Development Guide*

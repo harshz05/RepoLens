@@ -622,6 +622,25 @@ RepoLens uses a hybrid approach: deterministic static analysis (SAST) for absolu
 | **Broken Object Level Authorization (BOLA)** | AI-Assisted | Gemini reasoning over API routes + DB query filters | Medium (70%) |
 | **Business Logic & Privilege Escalation** | AI-Assisted | Gemini context evaluation over multi-file call paths | Medium (65%) |
 
+
+### Audit Data Flow (as implemented)
+
+```
+Ingestion:  git clone -> scan/filter -> tree-sitter parse -> persist files + file_contents + symbols(metadata_json)
+                                                         -> dependencies -> chunks + embeddings
+Audit:      load files (batches of 100) + file_contents
+            -> re-parse original source (calls, imports)
+            -> security rules (per file) + quality metrics + cyclomatic complexity
+               (central redaction; crashed rules recorded in the audit summary)
+            -> graph reachability enrichment (reverse BFS from api_endpoint symbols, depth <= 4)
+            -> coupling / circular dependencies (Tarjan SCC)
+            -> optional AI remediation advice -> health score -> persist findings
+```
+
+Source text lives in `file_contents` (1:1 with `files`) so audits operate on the exact original file; see ADR-023. Symbol metadata (decorators, `route`, `http_method`) is persisted as JSON on `symbols`; see ADR-024.
+
+---
+
 ---
 
 ## 10. Code Quality Engine

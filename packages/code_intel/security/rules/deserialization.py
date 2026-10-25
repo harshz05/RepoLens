@@ -25,7 +25,7 @@ class DeserializationRule(BaseSecurityRule):
 
     @property
     def detection_source(self) -> DetectionSource:
-        return DetectionSource.AST_ANALYSIS
+        return DetectionSource.STATIC_RULE
 
     PATTERNS = [
         ("Python Pickle Deserialization", re.compile(r"""\b(?:pickle|_pickle|cPickle)\.(?:loads?|Unpickler)\b"""), 0.96, FindingSeverity.CRITICAL),
@@ -58,7 +58,7 @@ class DeserializationRule(BaseSecurityRule):
                             description=f"Insecure deserialization function '{name}' detected. Deserializing untrusted data with pickle or unsafe loaders can trigger arbitrary code execution during object reconstitution.",
                             severity=severity,
                             confidence=confidence,
-                            detection_source=DetectionSource.AST_ANALYSIS,
+                            detection_source=DetectionSource.STATIC_RULE,
                             file_path=file_path,
                             start_line=idx,
                             end_line=idx,
